@@ -5,9 +5,12 @@ import shutil
 from selenium import webdriver
 from selenium.webdriver.edge.service import Service
 from selenium.webdriver.common.by import By
+import re
+import urllib.request
 import json
 import csv
 from bs4 import BeautifulSoup
+from docx import Document
 
 # Path to msedgedriver.exe
 edge_driver_path = "C:\\webDravier\\msedgedriver.exe"
@@ -50,8 +53,8 @@ def save_website_content(conn, url, content):
 def log_json_errors(logs):
     for entry in logs:
         log = json.loads(entry['message'])['message']
-        if 'params' in log and 'response' in log['params'] and 'status' in log['params']['response']:
-            if log['params']['response']['status'] >= 400:
+        if 'params' in log and 'response' in log['params']:
+            if log['params']['response'].get('status', 0) >= 400:
                 logging.error(f"JSON Error: {log}")
 
 # Function to save content to a CSV file
@@ -84,40 +87,74 @@ def fetch_and_save_content(driver, url):
     except Exception as e:
         logging.error(f"Error fetching content from {url}: {e}")
 
-keywords = ['Python', 'Selenium', 'Web scraping', 'Data analysis', 'Java', 'JavaScript', 'C', 'C++', 'C#', 'Ruby', 'Swift', 'Kotlin', 'Go', 'PHP', 'Perl', 'Rust', 'TypeScript', 'SQL', 'HTML', 'CSS', 'R', 'MATLAB', 'Lua', 'Shell scripting', 'Dart', 'Scala', 'Groovy', 'VBScript', 'PowerShell', 'Objective-C', 'Assembly', 'Visual Basic', 'Cobol']
-
+# Keywords for filtering content
+keywords = [
+    'Python', 'Selenium', 'Web scraping', 'Data analysis', 'Java', 'JavaScript', 'C', 'C++', 'C#', 'Ruby', 
+    'Swift', 'Kotlin', 'Go', 'PHP', 'Perl', 'Rust', 'TypeScript', 'SQL', 'HTML', 'CSS', 'R', 'MATLAB', 'Lua', 
+    'Shell scripting', 'Dart', 'Scala', 'Groovy', 'VBScript', 'PowerShell', 'Objective-C', 'Assembly', 
+    'Visual Basic', 'Cobol'
+]
 
 # Function to extract the main content from a BeautifulSoup object
 def extract_main_content(soup):
     content = ''
+    code_snippets = ''
 
-    # Look for main content tags and IDs/classes
+    # Extract code snippets from <pre> and <code> tags
+    pre_tags = soup.find_all('pre')
+    code_tags = soup.find_all('code')
+
+    for tag in pre_tags:
+        code_text = tag.get_text(strip=True)
+        if len(code_text.split()) > 5:
+            code_snippets += code_text + '\n'
+
+    for tag in code_tags:
+        code_text = tag.get_text(strip=True)
+        if len(code_text.split()) > 5:
+            code_snippets += code_text + '\n'
+
+    # Combine code snippets with other main content if available
     main_content_tags = soup.find_all(['article', 'section'])
     if not main_content_tags:
         main_content_tags = soup.find_all('div', class_=['main-content', 'content', 'post', 'entry'])
 
-    # Extract text from main content tags
     for tag in main_content_tags:
         for sub_tag in tag.find_all(['h1', 'h2', 'h3', 'p', 'li']):
             text = sub_tag.get_text(strip=True)
-            if len(text.split()) > 5:  # Rule: Keep only content with more than 5 words
+            if len(text.split()) > 5:
                 content += text + '\n'
 
     # Fallback to extract content from all paragraphs and headings if no specific tags found
     if not content:
         for tag in soup.find_all(['h1', 'h2', 'h3', 'p', 'li']):
             text = tag.get_text(strip=True)
-            if len(text.split()) > 5:  # Rule: Keep only content with more than 5 words
+            if len(text.split()) > 5:
                 content += text + '\n'
+
+    # Prioritize returning code snippets if available
+    if code_snippets:
+        return code_snippets
 
     # Filter content by keywords
     for keyword in keywords:
-        if keyword.lower() in content.lower():  # Case insensitive matching
+        if keyword.lower() in content.lower():
             return content
+
+    return content if content else code_snippets
 
     # If none of the keywords are found, return an empty string
     return ''
 
+# Function to read and extract content from a DOC file
+def extract_content_from_doc(file_path):
+    doc = Document(file_path)
+    content = ''
+    for paragraph in doc.paragraphs:
+        text = paragraph.text.strip()
+        if len(text.split()) > 5:  # Rule: Keep only content with more than 5 words
+            content += text + '\n'
+    return content
 
 # Function to get Edge browsing history
 def get_edge_history():
@@ -137,6 +174,22 @@ def get_edge_history():
     conn.close()
     return urls
 
+# Function to download and save DOC files from URLs
+def download_doc_file(driver, url):
+    try:
+        driver.get(url)
+        iframe = driver.find_element(By.ID, "office_iframe")
+        src = iframe.get_attribute("src")
+        m = re.search(r'.*?url=(.+?)/vector-output', src)
+        if m:
+            doc_url = m.group(1)
+            local_filename = os.path.join('downloaded_docs', os.path.basename(doc_url))
+            urllib.request.urlretrieve(doc_url, local_filename)
+            return local_filename
+    except Exception as e:
+        logging.error(f"Error downloading DOC file from {url}: {e}")
+    return None
+
 # List of websites to skip
 skip_list = [
     "https://translate.google.com",
@@ -155,6 +208,10 @@ def should_skip(url):
 if __name__ == "__main__":
     conn = create_content_db()
     try:
+        # Create a directory for downloaded DOC files if it doesn't exist
+        if not os.path.exists('downloaded_docs'):
+            os.makedirs('downloaded_docs')
+
         # Fetch browsing history from Edge
         history = get_edge_history()
 
@@ -171,9 +228,21 @@ if __name__ == "__main__":
                 print(f"Skipping {url}")
                 continue
 
-            print(f"Fetching content from {url}")
-            fetch_and_save_content(driver, url)
+            if "OfficePreview" in url and url.endswith(".docx"):
+                print(f"Downloading DOC file from {url}")
+                doc_file_path = download_doc_file(driver, url)
+                if doc_file_path:
+                    print(f"Fetching content from DOC file: {doc_file_path}")
+                    doc_content = extract_content_from_doc(doc_file_path)
+                    if doc_content:
+                        # Save DOC content to the database and CSV file
+                        save_website_content(conn, doc_file_path, doc_content)
+                        save_content_to_csv(doc_file_path, doc_content)
+            else:
+                print(f"Fetching content from {url}")
+                fetch_and_save_content(driver, url)
             processed_count += 1  # Increment the counter only if the URL is processed
+
     finally:
         driver.quit()
         conn.close()
