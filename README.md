@@ -34,7 +34,7 @@ This Python script allows you to scrape content from websites and save it to a d
 3. Run the script:
 
     ```
-    python scraper.py
+    python test.py
     ```
 
 ## Functionality
